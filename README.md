@@ -5,7 +5,7 @@ TRSS-Yunzai Discord Bot 适配器 插件
 ## 安装教程
 
 1. 准备：[TRSS-Yunzai](../../../Yunzai)
-2. 复制粘贴以下代码：
+2. 进入云崽文件夹，复制粘贴以下代码：
 ```
 cd plugins
 git clone https://github.com/NickNYCN/Yunzai-Discord-Plugin
