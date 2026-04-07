@@ -245,22 +245,32 @@ const adapter = new class DiscordAdapter {
   }
 
   makeMessageArray(data) {
-    data.user_id = `dc_${data.author.id}`
-    data.sender = {
-      user_id: data.user_id,
+    // 1. 【核心防御】创建一个纯净的新对象，抛弃自带克苏鲁循环的 Eris 原生对象
+    const e = {}
+    
+    e.post_type = "message"
+    e.self_id = data.self_id
+    e.user_id = `dc_${data.author.id}`
+    e.sender = {
+      user_id: e.user_id,
       nickname: data.author.username,
       avatar: data.author.avatarURL,
     }
-    data.message_id = data.id
+    e.message_id = data.id
 
-    data.message = []
-    data.raw_message = ""
+    e.message = []
+    e.raw_message = ""
 
+    // 2. 【修复回复功能】同时添加 reply_id 和 source，满足所有插件的抓取需求
     if (data.messageReference?.messageID) {
-      data.message.push({ type: "reply", id: data.messageReference.messageID })
-      data.raw_message += `[回复：${data.messageReference.messageID}]`
+      const replyId = data.messageReference.messageID
+      e.reply_id = replyId           // Yunzai 通用回复字段
+      e.source = { id: replyId }     // 兼容部分严格检查 source.id 的插件（如 chat-plugin）
+      e.message.push({ type: "reply", id: replyId })
+      e.raw_message += `[回复：${replyId}]`
     }
 
+    // 3. 处理文本和 AT
     if (data.content) {
       const match = data.content.match(/<@.+?>/g)
       if (match) {
@@ -269,52 +279,69 @@ const adapter = new class DiscordAdapter {
           const msg = content.split(i)
           const prev_msg = msg.shift()
           if (prev_msg) {
-            data.message.push({ type: "text", text: prev_msg })
-            data.raw_message += prev_msg
+            e.message.push({ type: "text", text: prev_msg })
+            e.raw_message += prev_msg
           }
           content = msg.join(i)
 
           const qq = `dc_${i.replace(/<@(.+?)>/, "$1")}`
-          data.message.push({ type: "at", qq })
-          data.raw_message += `[提及：${qq}]`
+          e.message.push({ type: "at", qq })
+          e.raw_message += `[提及：${qq}]`
         }
         if (content) {
-          data.message.push({ type: "text", text: content })
-          data.raw_message += content
+          e.message.push({ type: "text", text: content })
+          e.raw_message += content
         }
       } else {
-        data.message.push({ type: "text", text: data.content })
-        data.raw_message += data.content
+        e.message.push({ type: "text", text: data.content })
+        e.raw_message += data.content
       }
     }
 
-    for (const i of data.attachments) {
-      i.type = i.content_type.split("/")[0]
-      i.file = i.filename
-      data.message.push(i)
-      data.raw_message += JSON.stringify(i)
+    // 4. 处理附件
+    if (data.attachments && data.attachments.length > 0) {
+      for (const i of data.attachments) {
+        const type = i.content_type ? i.content_type.split("/")[0] : 'file'
+        e.message.push({
+          type: type,
+          file: i.filename,
+          url: i.url
+        })
+        e.raw_message += `[附件:${i.filename}]`
+      }
     }
 
-    return data
+    // 5. 频道基础信息拷贝
+    e.guildID = data.guildID
+    if (data.channel) {
+      e.channel_id = data.channel.id
+      e.channel_name = data.channel.name
+      if (data.channel.guild) {
+        e.guild_name = data.channel.guild.name
+      }
+    }
+
+    return e // 返回我们亲手组装的、绝对安全的纯对象
   }
 
   makeMessage(data) {
-    data.post_type = "message"
-    data = this.makeMessageArray(data)
-    if (data.user_id === data.self_id) return
+    // 获取安全的纯净对象 e
+    const e = this.makeMessageArray(data)
+    
+    if (e.user_id === e.self_id) return
 
-    if (data.guildID) {
-      data.message_type = "group"
-      data.group_id = `dc_${data.channel.id}`
-      data.group_name = `${data.channel.guild.name}-${data.channel.name}`
-      Bot.makeLog("info", `群消息：[${data.group_name}(${data.group_id}), ${data.sender.nickname}(${data.user_id})] ${data.raw_message}`, data.self_id)
+    if (e.guildID) {
+      e.message_type = "group"
+      e.group_id = `dc_${e.channel_id}`
+      e.group_name = `${e.guild_name || '群'}-${e.channel_name || '频道'}`
+      Bot.makeLog("info", `群消息：[${e.group_name}(${e.group_id}), ${e.sender.nickname}(${e.user_id})] ${e.raw_message}`, e.self_id)
     } else {
-      data.message_type = "private"
-      Bot.makeLog("info", `好友消息：[${data.sender.nickname}(${data.user_id})] ${data.raw_message}`, data.self_id)
+      e.message_type = "private"
+      Bot.makeLog("info", `好友消息：[${e.sender.nickname}(${e.user_id})] ${e.raw_message}`, e.self_id)
     }
 
-    delete data.member
-    Bot.em(`${data.post_type}.${data.message_type}`, data)
+    // 直接派发这个纯净的 e！不需要任何 delete 操作了！
+    Bot.em(`${e.post_type}.${e.message_type}`, e)
   }
 
   async connect(token) {
